@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <assert.h>
 #include <getopt.h>
 #include <fcntl.h>
@@ -67,6 +68,8 @@
 #ifndef VERSION
 #define VERSION "unknown"
 #endif
+
+#define PERFSEC 10
 
 #if defined(IO_MMAP) || defined(IO_USERPTR)
 // minimum number of buffers to request in VIDIOC_REQBUFS call
@@ -100,15 +103,18 @@ static unsigned int width = 640;
 static unsigned int height = 480;
 static unsigned int fps = 30;
 static int continuous = 0;
+static int perftest = 0;
 static unsigned char jpegQuality = 70;
 static char* jpegFilename = NULL;
 static char* jpegFilenamePart = NULL;
-static char* deviceName = "/dev/video0";
+static char video0 [32] = "/dev/video0";
+static char* deviceName = video0;
 
 /**
 SIGINT interput handler
 */
 void StopContCapture(int sig_id) {
+	(void)sig_id;
 	printf("stoping continuous capture\n");
 	continuous = 0;
 }
@@ -212,6 +218,9 @@ static void jpegWrite(unsigned char* img, char* jpegFilename)
 */
 static void imageProcess(const void* p, struct timeval timestamp)
 {
+	if (perftest)
+		return;
+
 	//timestamp.tv_sec
 	//timestamp.tv_usec
 	unsigned char* src = (unsigned char*)p;
@@ -224,8 +233,8 @@ static void imageProcess(const void* p, struct timeval timestamp)
 		long timestamp_long;
 		timestamp_long = timestamp.tv_sec*1e6 + timestamp.tv_usec;
 		sprintf(jpegFilename,"%s_%010d_%010ld.jpg",jpegFilenamePart,img_ind++,timestamp_long);
-
 	}
+
 	// write jpeg
 	jpegWrite(dst,jpegFilename);
 
@@ -344,11 +353,15 @@ static int frameRead(void)
 */
 static void mainLoop(void)
 {	
-	int count;
+	int count, perfcount;
 	unsigned int numberOfTimeouts;
-
+	struct timespec perfstart, perfstop;
+	
 	numberOfTimeouts = 0;
 	count = 3;
+	perfcount = 0;
+
+	clock_gettime(CLOCK_MONOTONIC, &perfstart);
 
 	while (count-- > 0) {
 		for (;;) {
@@ -384,11 +397,26 @@ static void mainLoop(void)
 				count = 3;
 			}
 
-			if (frameRead())
+			if (frameRead()) {
+				if (perftest) {
+					perfcount++;
+					printf(".");
+					fflush(stdout);
+					
+					clock_gettime(CLOCK_MONOTONIC, &perfstop);
+					if (perfstop.tv_sec - perfstart.tv_sec > PERFSEC)
+						count = 0;
+				}
 				break;
+			}
 
 			/* EAGAIN - continue select loop. */
 		}
+	}
+	
+	if (perftest) {
+		float duration = (perfstop.tv_sec - perfstart.tv_sec) + (perfstop.tv_nsec - perfstart.tv_nsec) / 1000000000.0;
+		printf("\ngot %i images in %g s => %g image/second\n", perfcount, duration, perfcount / duration);
 	}
 }
 
@@ -737,7 +765,7 @@ static void deviceInit(void)
 	}
 	
   /* If the user has set the fps to -1, don't try to set the frame interval */
-  if (fps != -1)
+  if ((int)fps != -1)
   {
     CLEAR(frameint);
     
@@ -823,6 +851,7 @@ static void deviceOpen(void)
 */
 static void usage(FILE* fp, int argc, char** argv)
 {
+	(void)argc;
 	fprintf(fp,
 		"Usage: %s [options]\n\n"
 		"Options:\n"
@@ -842,7 +871,7 @@ static void usage(FILE* fp, int argc, char** argv)
 		argv[0]);
 	}
 
-static const char short_options [] = "d:ho:q:mruW:H:I:vc";
+static const char short_options [] = "d:ho:q:mruW:H:I:vcp";
 
 static const struct option
 long_options [] = {
@@ -858,6 +887,7 @@ long_options [] = {
 	{ "interval",   required_argument,      NULL,           'I' },
 	{ "version",	no_argument,		NULL,		'v' },
 	{ "continuous",	no_argument,		NULL,		'c' },
+	{ "perftest",	no_argument,		NULL,		'p' },
 	{ 0, 0, 0, 0 }
 };
 
@@ -937,6 +967,8 @@ int main(int argc, char **argv)
 				fps = atoi(optarg);
 				break;
 
+			case 'p':
+				perftest = 1;
 			case 'c':
 				// set flag for continuous capture, interuptible by sigint
 				continuous = 1;
@@ -956,19 +988,27 @@ int main(int argc, char **argv)
 	}
 
 	// check for need parameters
-	if (!jpegFilename) {
+	if (!perftest && !jpegFilename) {
 		fprintf(stderr, "You have to specify JPEG output filename!\n\n");
 		usage(stdout, argc, argv);
 		exit(EXIT_FAILURE);
 	}
 	
-	if(continuous == 1) {
+	if(!perftest && continuous) {
 		int max_name_len = strlen(jpegFilename)+10+10+3;
 		jpegFilenamePart = jpegFilename;
 		jpegFilename = calloc(max_name_len,sizeof(char));
 		strcpy(jpegFilename,jpegFilenamePart);
 	}
 	
+	if (isdigit(deviceName[0]) && !deviceName[1])
+	{
+		strcpy(video0 + 10, deviceName);
+		deviceName = video0;
+	}
+	
+	if (perftest)
+		printf("perftest for %i seconds...\n", PERFSEC);
 
 	// open and initialize device
 	deviceOpen();

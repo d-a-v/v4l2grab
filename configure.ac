@@ -12,6 +12,8 @@ AC_CONFIG_FILES([Makefile])
 
 # Checks for programs.
 AC_PROG_CC
+CFLAGS="-Wall -Wextra"
+LDFLAGS="-ljpeg -lv4l2"
 
 # Checks for libraries.
 AC_CHECK_LIB([jpeg], [jpeg_start_compress])
